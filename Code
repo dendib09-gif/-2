@@ -1,0 +1,223 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+G         = 1.0         
+N         = 500        
+dt        = 0.005       
+N_steps   = 500         
+soft      = 0.05        
+theta     = 0.5          
+use_tree  = True         
+save_every = 50         
+SEED      = 42
+
+np.random.seed(SEED)
+
+R = 10.0
+angles = np.random.uniform(0, 2*np.pi, N)
+radii  = R * np.sqrt(np.random.uniform(0, 1, N))
+
+pos = np.zeros((N, 3))
+pos[:, 0] = radii * np.cos(angles)
+pos[:, 1] = radii * np.sin(angles)
+pos[:, 2] = np.random.normal(0, 0.3, N)
+
+mass = np.ones(N)
+M_total = mass.sum()
+
+
+r_mag  = np.linalg.norm(pos[:, :2], axis=1) + 1e-6
+v_circ = np.sqrt(G * M_total / r_mag) * 0.5
+
+vel = np.zeros((N, 3))
+vel[:, 0] = -v_circ * pos[:, 1] / r_mag
+vel[:, 1] =  v_circ * pos[:, 0] / r_mag
+vel += np.random.normal(0, 0.05, vel.shape)
+
+
+def compute_acceleration_direct(pos, mass, G, soft):
+    diff = pos[None, :, :] - pos[:, None, :]         
+    dist2 = np.sum(diff**2, axis=2) + soft**2
+    inv_dist3 = 1.0 / (dist2 * np.sqrt(dist2))
+    np.fill_diagonal(inv_dist3, 0.0)
+    acc = G * np.einsum('ij,ijk->ik', mass[None, :] * inv_dist3, diff)
+    return acc
+
+class OctreeNode:
+    """Узел октодерева. Хранит границы, массу и центр масс."""
+    __slots__ = ('center', 'half', 'mass', 'com', 'children', 'indices')
+
+    def __init__(self, center, half):
+        self.center   = center         
+        self.half     = half            
+        self.mass     = 0.0
+        self.com      = np.zeros(3)    
+        self.children = []             
+        self.indices  = None            
+
+    def is_leaf(self):
+        return self.children == [] or self.children is None
+
+
+def _octant_child_center(parent_center, half, idx):
+
+    sx = +half/2 if (idx & 1) else -half/2
+    sy = +half/2 if (idx & 2) else -half/2
+    sz = +half/2 if (idx & 4) else -half/2
+    return parent_center + np.array([sx, sy, sz])
+
+
+def _octant_of(point, center):
+  
+    idx = 0
+    if point[0] >= center[0]: idx |= 1
+    if point[1] >= center[1]: idx |= 2
+    if point[2] >= center[2]: idx |= 4
+    return idx
+
+
+def build_tree(pos, mass, indices, center, half, depth=0, max_depth=20, leaf_max=1):
+    node = OctreeNode(center, half)
+    if len(indices) == 0:
+        return None
+
+
+    m = mass[indices]
+    node.mass = m.sum()
+    node.com  = (pos[indices] * m[:, None]).sum(0) / node.mass
+
+
+    if len(indices) <= leaf_max or depth >= max_depth:
+        node.indices = indices
+        return node
+
+
+    buckets = [[] for _ in range(8)]
+    for i in indices:
+        buckets[_octant_of(pos[i], center)].append(i)
+
+
+    if sum(1 for b in buckets if b) <= 1:
+        node.indices = indices
+        return node
+
+    child_half = half / 2
+    for k, bucket in enumerate(buckets):
+        if not bucket:
+            continue
+        child_center = _octant_child_center(center, half, k)
+        child = build_tree(pos, mass, np.array(bucket), child_center,
+                           child_half, depth+1, max_depth, leaf_max)
+        if child is not None:
+            node.children.append(child)
+    return node
+
+
+def tree_force(node, target_pos, target_mass, G, theta, soft):
+    """Сила, действующая на частицу в target_pos со стороны node."""
+    if node is None or node.mass == 0.0:
+        return np.zeros(3)
+
+    d = node.com - target_pos
+    r2 = np.dot(d, d) + soft**2
+    r  = np.sqrt(r2)
+
+    # Критерий Барнса-Хата
+    s = node.half  
+    if node.is_leaf() or (s / r < theta):
+        return G * target_mass * node.mass * d / (r2 * r)
+
+    F = np.zeros(3)
+    for child in node.children:
+        F += tree_force(child, target_pos, target_mass, G, theta, soft)
+    return F
+
+
+def compute_acceleration_tree(pos, mass, G, theta, soft, max_depth=20):
+    """Ускорения всех частиц через дерево Барнса-Хата."""
+    N = len(mass)
+    acc = np.zeros_like(pos)
+    lo = pos.min(axis=0)
+    hi = pos.max(axis=0)
+    center = 0.5 * (lo + hi)
+    half   = 0.5 * np.max(hi - lo) + 1e-6
+    indices = np.arange(N)
+    root = build_tree(pos, mass, indices, center, half,
+                      depth=0, max_depth=max_depth)
+    for i in range(N):
+        acc[i] = tree_force(root, pos[i], mass[i], G, theta, soft)
+    return acc
+
+
+def compute_acceleration(pos, mass, G, soft, use_tree, theta):
+    if use_tree:
+        return compute_acceleration_tree(pos, mass, G, theta, soft)
+    return compute_acceleration_direct(pos, mass, G, soft)
+
+def total_energy(pos, vel, mass, G, soft):
+    KE = 0.5 * np.sum(mass[:, None] * vel**2)
+    diff = pos[None, :, :] - pos[:, None, :]
+    dist = np.sqrt(np.sum(diff**2, axis=2) + soft**2)
+    np.fill_diagonal(dist, np.inf)
+    PE = -G * 0.5 * np.sum((mass[:, None] * mass[None, :]) / dist)
+    return KE + PE
+
+acc = compute_acceleration(pos, mass, G, soft, use_tree, theta)
+
+
+pos_prev = pos - dt * vel + 0.5 * dt**2 * acc
+
+history  = []
+energies = []
+
+
+energies.append(total_energy(pos, vel, mass, G, soft))
+history.append(pos.copy())
+
+for step in range(1, N_steps + 1):
+    # Формула Верле 
+    pos_new = 2.0 * pos - pos_prev + dt**2 * acc
+    vel = (pos_new - pos_prev) / (2.0 * dt)
+    acc_new = compute_acceleration(pos_new, mass, G, soft, use_tree, theta)
+    pos_prev = pos.copy()
+    pos      = pos_new
+    acc      = acc_new
+    if step % save_every == 0:
+        history.append(pos.copy())
+        E = total_energy(pos, vel, mass, G, soft)
+        energies.append(E)
+    if step % 500 == 0:
+        print(f"step {step:5d}/{N_steps}  E = {energies[-1]:.4f}")
+
+print(f"\nГотово. Шагов: {N_steps}, тел: {N}, дерево: {use_tree}")
+print(f"Начальная энергия : {energies[0]:.6f}")
+print(f"Конечная  энергия : {energies[-1]:.6f}")
+print(f"Относительное изменение: {abs((energies[-1]-energies[0])/energies[0])*100:.3f} %")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+
+ax = axes[0]
+colors = plt.cm.viridis(np.linspace(0, 1, N))
+for i in range(N):
+    traj = np.array([h[i, :2] for h in history])
+    ax.plot(traj[:, 0], traj[:, 1], lw=0.5, alpha=0.6, color=colors[i])
+ax.scatter(pos[:, 0], pos[:, 1], s=8, c='red', zorder=5, label='конечное положение')
+ax.set_aspect('equal')
+ax.set_title('Траектории тел')
+ax.set_xlabel('x'); ax.set_ylabel('y')
+ax.grid(True, alpha=0.3)
+ax.legend(loc='upper right')
+
+
+ax = axes[1]
+steps_arr = np.arange(len(energies)) * save_every
+ax.plot(steps_arr, energies, 'b-', lw=1.2)
+ax.set_title('Полная энергия системы')
+ax.set_xlabel('шаг')
+ax.set_ylabel('E')
+ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('nbody_verlet_tree.png', dpi=120)
+plt.show()
