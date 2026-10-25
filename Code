@@ -1,15 +1,15 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-G         = 1.0         
-N         = 500        
-dt        = 0.005       
-N_steps   = 500         
-soft      = 0.05        
-theta     = 0.5          
+G = 1.0         
+N = 500        
+dt = 0.005       
+N_steps = 500         
+soft = 0.05        
+theta = 0.5          
 use_tree  = True         
 save_every = 50         
-SEED      = 42
+SEED = 42
 
 np.random.seed(SEED)
 
