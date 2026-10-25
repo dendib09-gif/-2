@@ -40,10 +40,9 @@ def compute_acceleration_direct(pos, mass, G, soft):
  - children - дочерние узлы
  - indices - индексы частиц
  - _slots_ - экономия памяти
-# -5- Сила узла
-Критерий Барнса-Хата "s/r" - аппроксимируем весь узел одной точкой в центре масс.
+# -5- Сила от узла
 ```
-def tree_force(node, target_pos, target_mass, G, theta, soft):
+ def tree_force(node, target_pos, target_mass, G, theta, soft):
     d = node.com - target_pos
     r2 = np.dot(d, d) + soft**2
     r  = np.sqrt(r2)
@@ -55,13 +54,14 @@ def tree_force(node, target_pos, target_mass, G, theta, soft):
         F += tree_force(child, target_pos, target_mass, G, theta, soft)
     return F
 ```
+Критерий Барнса-Хата "s/r < theta" - аппроксимируем весь узел одной точкой в центре масс. Если нет,
+то рекурсивно спускаемся.
 # -6- Диагностика
 Контроль качества интегрирования. 0.5 в PE - компенсация двойного счета пар (i,j) и (j,i). soft входит 
 и в расстояние, чтобы энергия соответствовала смягченной силе, что и в динамике.
 ```
 def total_energy(pos, vel, mass, G, soft):
     KE = 0.5 * np.sum(mass[:, None] * vel**2)
-    ...
     PE = -G * 0.5 * np.sum((mass[:, None] * mass[None, :]) / dist)
     return KE + PE
 ```
